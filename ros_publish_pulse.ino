@@ -15,7 +15,12 @@
 #error This example is only avaible for Arduino Portenta, Arduino Nano RP2040 Connect, ESP32 Dev module and Wio Terminal
 #endif
 
-const int PORT = 50000;
+#define SSID "doly-wifi"
+#define PASSWORD "doly2021"
+#define IP "192.168.65.29"
+#define PORT 50000
+#define LED_PIN 13
+#define MAX_LEN_DATA 30
 
 /***** ROS *****/
 rcl_publisher_t publisher;
@@ -27,10 +32,6 @@ rcl_node_t node;
 rcl_init_options_t init_options; // Humble
 size_t domain_id = 30;
 /***************/
-
-#define LED_PIN 13
-#define X_PNN 50
-#define MAX_LEN_DATA 30
 
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){error_loop();}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
@@ -58,12 +59,14 @@ int Threshold = 550;
 int inpin = 35;
 int led = 4;
 double Emotion = 0;
-int BPM, Signal;
+int Signal;
 const int fade = 5;
 const int OUTPUT_TYPE = SERIAL_PLOTTER;
 //const int OUTPUT_TYPE = PROCESSING_VISUALIZER;
-int rri = 0;
-float pnnx = 0.0;
+int rri;
+int bpm;
+float pnn20 = 0.0;
+float pnn50 = 0.0;
 
 PulseSensorPlayground pulseSensor;
 byte samplesUntilReport;
@@ -109,7 +112,7 @@ void setup() {
   timerAlarmEnable(timer1);
 
   /***** ROS *****/
-  set_microros_wifi_transports("doly-wifi", "doly2021", "192.168.65.29", PORT);
+  set_microros_wifi_transports(SSID, PASSWORD, IP, PORT);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);
   // Wait init complete
@@ -140,7 +143,7 @@ void setup() {
   RCCHECK(rclc_publisher_init(
     &publisher, &node, 
 		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-		"pnnx", &rmw_qos_profile_default
+		"pulse", &rmw_qos_profile_default
 	));
 
   msg.data = 0.0;
@@ -151,41 +154,69 @@ void loop() {
     if (pulseSensor.sawNewSample()) {
       rri = pulseSensor.getInterBeatIntervalMs(0);
       if (pulseSensor.sawStartOfBeat()) {
-        // Serial.println(rri);
-        pnnx = calc_pnnx(float(rri));
-        // Serial.println(pnnx);
-        msg.data = pnnx;
-        // publish pnnx
+        pnn50 = calc_pnn50(float(rri));
+        msg.data = pnn50;
+        // publish BPM, IBI, PNN20, PNN50
         RCSOFTCHECK(rcl_publish(&publisher, &msg, NULL));
       }
     }
   }
 }
 
-float calc_pnnx(float rri) {
-  static float rri_arr[MAX_LEN_DATA + 2] = {0};
+float calc_pnn50(float ibi) {
+  int X_PNN = 50;
+  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
   static int xx_count = 0;
   xx_count++;
-  Serial.println(xx_count);
+
   if (xx_count >= MAX_LEN_DATA + 2) {
     for (int i = 0; i < MAX_LEN_DATA; i++) {
-      rri_arr[i] = rri_arr[i + 1];
+      ibi_arr[i] = ibi_arr[i + 1];
     }
-    rri_arr[MAX_LEN_DATA - 1] = rri;
+    ibi_arr[MAX_LEN_DATA - 1] = ibi;
 
     int count = 0;
     for (int i = 0; i < MAX_LEN_DATA; i++) {
-      if (fabs(rri_arr[i] - rri_arr[i + 1]) > X_PNN) {
+      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
         count++;
       }
     }
     // Calc and update pnnx
-    float pnnx = (float)count / MAX_LEN_DATA;
-    return pnnx;
+    float pnn50 = (float)count / MAX_LEN_DATA;
+    return pnn50;
   }
   // No enough data for pnnx
   else if (xx_count < MAX_LEN_DATA + 2) {
-    rri_arr[xx_count - 1] = rri;
+    ibi_arr[xx_count - 1] = ibi;
+    return 0.0;
+  }
+}
+
+float calc_pnn20(float ibi) {
+  int X_PNN = 20;
+  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
+  static int xx_count = 0;
+  xx_count++;
+
+  if (xx_count >= MAX_LEN_DATA + 2) {
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      ibi_arr[i] = ibi_arr[i + 1];
+    }
+    ibi_arr[MAX_LEN_DATA - 1] = ibi;
+
+    int count = 0;
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
+        count++;
+      }
+    }
+    // Calc and update pnnx
+    float pnn20 = (float)count / MAX_LEN_DATA;
+    return pnn20;
+  }
+  // No enough data for pnnx
+  else if (xx_count < MAX_LEN_DATA + 2) {
+    ibi_arr[xx_count - 1] = ibi;
     return 0.0;
   }
 }
