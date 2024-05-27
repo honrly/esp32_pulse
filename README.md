@@ -1,5 +1,5 @@
 # ESP32_pnnx
-ESP32とmicro-rosでpnnxをpublishするコード
+ESP32とmicro-rosで心拍情報をpublishするコード
 
 ## 起動
 Ubuntu側
