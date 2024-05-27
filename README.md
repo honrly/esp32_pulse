@@ -1,4 +1,4 @@
-# ESP32_pnnx
+# ESP32_pulse
 ESP32とmicro-rosで心拍情報をpublishするコード
 
 ## 起動
