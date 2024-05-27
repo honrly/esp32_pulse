@@ -1,15 +1,17 @@
 #include <micro_ros_arduino.h>
 
 #include <stdio.h>
+#include <math.h>
 #include <rcl/rcl.h>
 #include <rcl/error_handling.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
-#include <std_msgs/msg/Float32.h>
+
+#include <my_custom_message/msg/bio_data.h>
 
 #define USE_ARDUINO_INTERRUPTS false
-#include<PulseSensorPlayground.h>
-#include<Ticker.h>
+#include <PulseSensorPlayground.h>
+#include <Ticker.h>
 
 #if !defined(ESP32) && !defined(TARGET_PORTENTA_H7_M7) && !defined(ARDUINO_NANO_RP2040_CONNECT) && !defined(ARDUINO_WIO_TERMINAL)
 #error This example is only avaible for Arduino Portenta, Arduino Nano RP2040 Connect, ESP32 Dev module and Wio Terminal
@@ -17,14 +19,16 @@
 
 #define SSID "doly-wifi"
 #define PASSWORD "doly2021"
-#define IP "192.168.65.29"
+#define IP "192.168.64.169"
 #define PORT 50000
 #define LED_PIN 13
 #define MAX_LEN_DATA 30
+#define PNNX_SIZE 4
+#define IBI_SIZE 2
 
 /***** ROS *****/
 rcl_publisher_t publisher;
-std_msgs__msg__Float32 msg;
+my_custom_message__msg__BioData msg;
 rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
@@ -49,12 +53,12 @@ void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
   RCLC_UNUSED(last_call_time);
   if (timer != NULL) {
     RCSOFTCHECK(rcl_publish(&publisher, &msg, NULL));
-    msg.data++;
+    msg.ibi++;
   }
 }
 
 /***** Pulse *****/
-char ibi[16];
+// char ibi[16];
 int Threshold = 550;
 int inpin = 35;
 int led = 4;
@@ -63,9 +67,15 @@ int Signal;
 const int fade = 5;
 const int OUTPUT_TYPE = SERIAL_PLOTTER;
 //const int OUTPUT_TYPE = PROCESSING_VISUALIZER;
-int rri;
-int bpm;
+int ibi[2] = {0};
+int ibi_count = 0;
+int ibi_index = 0;
+int bpm = 0;
+float rmssd = 0.0;
+float pnn10 = 0.0;
 float pnn20 = 0.0;
+float pnn30 = 0.0;
+float pnn40 = 0.0;
 float pnn50 = 0.0;
 
 PulseSensorPlayground pulseSensor;
@@ -142,29 +152,81 @@ void setup() {
   */
   RCCHECK(rclc_publisher_init(
     &publisher, &node, 
-		ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+		ROSIDL_GET_MSG_TYPE_SUPPORT(my_custom_message, msg, BioData),
 		"pulse", &rmw_qos_profile_default
 	));
 
-  msg.data = 0.0;
+  // msg.data = 0.0;
+  msg.ibi = 0;
+  msg.bpm = 0;
+  msg.pnn10 = 0.0;
+  msg.pnn20 = 0.0;
+  msg.pnn30 = 0.0;
+  msg.pnn40 = 0.0;
+  msg.pnn50 = 0.0;
+  msg.rmssd = 0.0;
 }
 
 void loop() {
   if (xSemaphoreTake(timerSemaphore, 0) == pdTRUE) {
     if (pulseSensor.sawNewSample()) {
-      rri = pulseSensor.getInterBeatIntervalMs(0);
+
+      if (ibi_count == 0) {
+        ibi[0] = pulseSensor.getInterBeatIntervalMs(0);
+        ibi_count++;
+        ibi_index = 0;
+      } else if (ibi_count == 1) {
+        ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
+        ibi_count++;
+        ibi_index = 1;
+      } else {
+        ibi[0] = ibi[1];
+        ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
+      }
+      msg.ibi = ibi[1];
+
+      //rmssd = calc_rmssd(ibi);
+      msg.rmssd = rmssd;
+
+      bpm = pulseSensor.getBeatsPerMinute(0);
+      msg.bpm = bpm;
+
       if (pulseSensor.sawStartOfBeat()) {
-        pnn50 = calc_pnn50(float(rri));
-        msg.data = pnn50;
-        // publish BPM, IBI, PNN20, PNN50
+        pnn10 = calc_pnn10(float(ibi[ibi_index]));
+        pnn20 = calc_pnn20(float(ibi[ibi_index]));
+        pnn30 = calc_pnn30(float(ibi[ibi_index]));
+        pnn40 = calc_pnn40(float(ibi[ibi_index]));
+        pnn50 = calc_pnn50(float(ibi[ibi_index]));
+        msg.pnn10 = pnn10;
+        msg.pnn20 = pnn20;
+        msg.pnn30 = pnn30;
+        msg.pnn40 = pnn40;
+        msg.pnn50 = pnn50;
+
+        // publish IBI, RMSSD, BPM, PNN10-50
         RCSOFTCHECK(rcl_publish(&publisher, &msg, NULL));
       }
     }
   }
 }
 
-float calc_pnn50(float ibi) {
-  int X_PNN = 50;
+float calc_rmssd(int ibi[]) {
+
+    float sumOfSquares = 0.0;
+    // static float diffArray[];
+    for (int i = 1; i < 2; i++) {
+      int diff = ibi[i] - ibi[i - 1];
+      sumOfSquares += diff * diff;
+    }
+
+    float meanOfSquares = sumOfSquares / (2 - 1);
+    float rmssd = sqrt(meanOfSquares);
+
+    return rmssd;
+}
+
+float calc_pnn10(float ibi) {
+  int X_PNN = 10;
   static float ibi_arr[MAX_LEN_DATA + 2] = {0};
   static int xx_count = 0;
   xx_count++;
@@ -182,8 +244,8 @@ float calc_pnn50(float ibi) {
       }
     }
     // Calc and update pnnx
-    float pnn50 = (float)count / MAX_LEN_DATA;
-    return pnn50;
+    float pnn10 = (float)count / MAX_LEN_DATA;
+    return pnn10;
   }
   // No enough data for pnnx
   else if (xx_count < MAX_LEN_DATA + 2) {
@@ -213,6 +275,93 @@ float calc_pnn20(float ibi) {
     // Calc and update pnnx
     float pnn20 = (float)count / MAX_LEN_DATA;
     return pnn20;
+  }
+  // No enough data for pnnx
+  else if (xx_count < MAX_LEN_DATA + 2) {
+    ibi_arr[xx_count - 1] = ibi;
+    return 0.0;
+  }
+}
+
+float calc_pnn30(float ibi) {
+  int X_PNN = 30;
+  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
+  static int xx_count = 0;
+  xx_count++;
+
+  if (xx_count >= MAX_LEN_DATA + 2) {
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      ibi_arr[i] = ibi_arr[i + 1];
+    }
+    ibi_arr[MAX_LEN_DATA - 1] = ibi;
+
+    int count = 0;
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
+        count++;
+      }
+    }
+    // Calc and update pnnx
+    float pnn30 = (float)count / MAX_LEN_DATA;
+    return pnn30;
+  }
+  // No enough data for pnnx
+  else if (xx_count < MAX_LEN_DATA + 2) {
+    ibi_arr[xx_count - 1] = ibi;
+    return 0.0;
+  }
+}
+
+float calc_pnn40(float ibi) {
+  int X_PNN = 40;
+  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
+  static int xx_count = 0;
+  xx_count++;
+
+  if (xx_count >= MAX_LEN_DATA + 2) {
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      ibi_arr[i] = ibi_arr[i + 1];
+    }
+    ibi_arr[MAX_LEN_DATA - 1] = ibi;
+
+    int count = 0;
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
+        count++;
+      }
+    }
+    // Calc and update pnnx
+    float pnn40 = (float)count / MAX_LEN_DATA;
+    return pnn40;
+  }
+  // No enough data for pnnx
+  else if (xx_count < MAX_LEN_DATA + 2) {
+    ibi_arr[xx_count - 1] = ibi;
+    return 0.0;
+  }
+}
+
+float calc_pnn50(float ibi) {
+  int X_PNN = 50;
+  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
+  static int xx_count = 0;
+  xx_count++;
+
+  if (xx_count >= MAX_LEN_DATA + 2) {
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      ibi_arr[i] = ibi_arr[i + 1];
+    }
+    ibi_arr[MAX_LEN_DATA - 1] = ibi;
+
+    int count = 0;
+    for (int i = 0; i < MAX_LEN_DATA; i++) {
+      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
+        count++;
+      }
+    }
+    // Calc and update pnnx
+    float pnn50 = (float)count / MAX_LEN_DATA;
+    return pnn50;
   }
   // No enough data for pnnx
   else if (xx_count < MAX_LEN_DATA + 2) {
