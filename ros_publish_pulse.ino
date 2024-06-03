@@ -11,7 +11,6 @@
 
 #define USE_ARDUINO_INTERRUPTS false
 #include <PulseSensorPlayground.h>
-#include <Ticker.h>
 
 #if !defined(ESP32) && !defined(TARGET_PORTENTA_H7_M7) && !defined(ARDUINO_NANO_RP2040_CONNECT) && !defined(ARDUINO_WIO_TERMINAL)
 #error This example is only avaible for Arduino Portenta, Arduino Nano RP2040 Connect, ESP32 Dev module and Wio Terminal
@@ -40,7 +39,6 @@ size_t domain_id = 30;
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){error_loop();}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
 
-
 void error_loop(){
   while(1){
     digitalWrite(LED_PIN, !digitalRead(LED_PIN));
@@ -59,18 +57,17 @@ void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
 
 /***** Pulse *****/
 // char ibi[16];
-int Threshold = 550;
+int Threshold = 2200;
 int inpin = 35;
-int led = 4;
-double Emotion = 0;
-int Signal;
+int led = 2;
 const int fade = 5;
 const int OUTPUT_TYPE = SERIAL_PLOTTER;
-//const int OUTPUT_TYPE = PROCESSING_VISUALIZER;
+
+int bpm = 0;
 int ibi[2] = {0};
 int ibi_count = 0;
 int ibi_index = 0;
-int bpm = 0;
+float sdnn = 0.0;
 float rmssd = 0.0;
 float pnn10 = 0.0;
 float pnn20 = 0.0;
@@ -82,13 +79,6 @@ PulseSensorPlayground pulseSensor;
 byte samplesUntilReport;
 const byte SAMPLES_PER_SERIAL_SAMPLE = 10;
 
-volatile SemaphoreHandle_t timerSemaphore;
-hw_timer_t *timer1 = NULL;
-portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
-
-void IRAM_ATTR onTimer1() {
-  xSemaphoreGiveFromISR(timerSemaphore, NULL);
-}
 /******************/
 
 void setup() {
@@ -113,13 +103,6 @@ void setup() {
     }
 
   }
-
-  int intersamp = 1000000 / 4096;
-  timerSemaphore = xSemaphoreCreateBinary();
-  timer1 = timerBegin(0, 80, true);
-  timerAttachInterrupt(timer1, &onTimer1, true);
-  timerAlarmWrite(timer1, intersamp, true);
-  timerAlarmEnable(timer1);
 
   /***** ROS *****/
   set_microros_wifi_transports(SSID, PASSWORD, IP, PORT);
@@ -157,61 +140,64 @@ void setup() {
 	));
 
   // msg.data = 0.0;
-  msg.ibi = 0;
   msg.bpm = 0;
+  msg.ibi = 0;
+  msg.sdnn = 0.0;
+  msg.rmssd = 0.0;
   msg.pnn10 = 0.0;
   msg.pnn20 = 0.0;
   msg.pnn30 = 0.0;
   msg.pnn40 = 0.0;
   msg.pnn50 = 0.0;
-  msg.rmssd = 0.0;
 }
 
 void loop() {
-  if (xSemaphoreTake(timerSemaphore, 0) == pdTRUE) {
-    if (pulseSensor.sawNewSample()) {
+  if (pulseSensor.sawNewSample()) {
 
-      if (ibi_count == 0) {
-        ibi[0] = pulseSensor.getInterBeatIntervalMs(0);
-        ibi_count++;
-        ibi_index = 0;
-      } else if (ibi_count == 1) {
-        ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
-        ibi_count++;
-        ibi_index = 1;
-      } else {
-        ibi[0] = ibi[1];
-        ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
-      }
-      msg.ibi = ibi[1];
+    bpm = pulseSensor.getBeatsPerMinute(0);
+    msg.bpm = bpm;
 
-      //rmssd = calc_rmssd(ibi);
-      msg.rmssd = rmssd;
+    if (ibi_count == 0) {
+      ibi[0] = pulseSensor.getInterBeatIntervalMs(0);
+      ibi_count++;
+      ibi_index = 0;
+    } else if (ibi_count == 1) {
+      ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
+      ibi_count++;
+      ibi_index = 1;
+    } else if (ibi_count >= 2) {
+      ibi[0] = ibi[1];
+      ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
+    } else {
+      error_loop();
+    }
+    msg.ibi = ibi[ibi_index];
 
-      bpm = pulseSensor.getBeatsPerMinute(0);
-      msg.bpm = bpm;
+    msg.sdnn = sdnn;
+    //rmssd = calc_rmssd(ibi);
+    msg.rmssd = rmssd;
 
-      if (pulseSensor.sawStartOfBeat()) {
-        pnn10 = calc_pnn10(float(ibi[ibi_index]));
-        pnn20 = calc_pnn20(float(ibi[ibi_index]));
-        pnn30 = calc_pnn30(float(ibi[ibi_index]));
-        pnn40 = calc_pnn40(float(ibi[ibi_index]));
-        pnn50 = calc_pnn50(float(ibi[ibi_index]));
-        msg.pnn10 = pnn10;
-        msg.pnn20 = pnn20;
-        msg.pnn30 = pnn30;
-        msg.pnn40 = pnn40;
-        msg.pnn50 = pnn50;
+    if (pulseSensor.sawStartOfBeat()) {
+      pnn10 = calc_pnn10(float(ibi[ibi_index]));
+      pnn20 = calc_pnn20(float(ibi[ibi_index]));
+      pnn30 = calc_pnn30(float(ibi[ibi_index]));
+      pnn40 = calc_pnn40(float(ibi[ibi_index]));
+      pnn50 = calc_pnn50(float(ibi[ibi_index]));
+      msg.pnn10 = pnn10;
+      msg.pnn20 = pnn20;
+      msg.pnn30 = pnn30;
+      msg.pnn40 = pnn40;
+      msg.pnn50 = pnn50;
 
-        // publish IBI, RMSSD, BPM, PNN10-50
-        RCSOFTCHECK(rcl_publish(&publisher, &msg, NULL));
-      }
+      // publish IBI, RMSSD, BPM, PNN10-50
+      RCSOFTCHECK(rcl_publish(&publisher, &msg, NULL));
+      Serial.println(msg.ibi);
     }
   }
 }
 
 float calc_rmssd(int ibi[]) {
-
+  // mijissou
     float sumOfSquares = 0.0;
     // static float diffArray[];
     for (int i = 1; i < 2; i++) {
