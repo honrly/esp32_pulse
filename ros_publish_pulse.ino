@@ -191,7 +191,6 @@ void loop() {
 
       // publish IBI, RMSSD, BPM, PNN10-50
       RCSOFTCHECK(rcl_publish(&publisher, &msg, NULL));
-      Serial.println(msg.ibi);
     }
   }
 }
