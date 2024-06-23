@@ -7,7 +7,8 @@
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
 
-#include <my_custom_message/msg/bio_data.h>
+#include <my_custom_message/msg/pulse_data.h>
+#include <rosidl_runtime_c/string_functions.h>
 
 #define USE_ARDUINO_INTERRUPTS false
 #include <PulseSensorPlayground.h>
@@ -16,18 +17,19 @@
 #error This example is only avaible for Arduino Portenta, Arduino Nano RP2040 Connect, ESP32 Dev module and Wio Terminal
 #endif
 
-#define SSID "doly-wifi"
-#define PASSWORD "doly2021"
-#define IP "192.168.64.169"
+//#define SSID "doly-wifi"
+#define SSID "dlab13D30"
+//#define PASSWORD "doly2021"
+#define PASSWORD "doly2024"
+#define IP "192.168.68.52"
 #define PORT 50000
 #define LED_PIN 13
 #define MAX_LEN_DATA 30
-#define PNNX_SIZE 4
-#define IBI_SIZE 2
+#define IBI_SIZE 31
 
 /***** ROS *****/
 rcl_publisher_t publisher;
-my_custom_message__msg__BioData msg;
+my_custom_message__msg__PulseData msg;
 rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
@@ -57,6 +59,7 @@ void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
 
 /***** Pulse *****/
 // char ibi[16];
+//int Threshold = 550;
 int Threshold = 2200;
 int inpin = 35;
 int led = 2;
@@ -64,16 +67,16 @@ const int fade = 5;
 const int OUTPUT_TYPE = SERIAL_PLOTTER;
 
 int bpm = 0;
-int ibi[2] = {0};
+int ibi_list[IBI_SIZE] = {0};
 int ibi_count = 0;
-int ibi_index = 0;
-float sdnn = 0.0;
-float rmssd = 0.0;
-float pnn10 = 0.0;
-float pnn20 = 0.0;
-float pnn30 = 0.0;
-float pnn40 = 0.0;
-float pnn50 = 0.0;
+int ibi = 0;
+
+String buf[4];
+int hour;
+int minute;
+int second;
+int milsec;
+int start;
 
 PulseSensorPlayground pulseSensor;
 byte samplesUntilReport;
@@ -84,6 +87,7 @@ const byte SAMPLES_PER_SERIAL_SAMPLE = 10;
 void setup() {
   /***** Pulse *****/
   Serial.begin(115200);
+  Serial.println("he");
   delay(10);
 
   pulseSensor.analogInput(inpin);
@@ -135,222 +139,179 @@ void setup() {
   */
   RCCHECK(rclc_publisher_init(
     &publisher, &node, 
-		ROSIDL_GET_MSG_TYPE_SUPPORT(my_custom_message, msg, BioData),
+		ROSIDL_GET_MSG_TYPE_SUPPORT(my_custom_message, msg, PulseData),
 		"pulse", &rmw_qos_profile_default
 	));
 
   // msg.data = 0.0;
+  rosidl_runtime_c__String__assign(&msg.timestamp, "");
   msg.bpm = 0;
   msg.ibi = 0;
   msg.sdnn = 0.0;
+  msg.cvnn = 0.0;
   msg.rmssd = 0.0;
   msg.pnn10 = 0.0;
   msg.pnn20 = 0.0;
   msg.pnn30 = 0.0;
   msg.pnn40 = 0.0;
   msg.pnn50 = 0.0;
+
+  hour = buf[0].toInt();
+  minute = buf[1].toInt();
+  second = buf[2].toInt();
+  switch (buf[3].length()) {
+    case 0: buf[3] += "000"; break;
+    case 1: buf[3] += "00"; break;
+    case 2: buf[3] += "0"; break;
+  }
+  milsec = buf[3].toInt();
+  start = millis();
+  Serial.println(String(hour) + ":" + String(minute) + ":" + String(second) + "." + String(milsec));
+
 }
 
 void loop() {
   if (pulseSensor.sawNewSample()) {
-
-    bpm = pulseSensor.getBeatsPerMinute(0);
-    msg.bpm = bpm;
-
-    if (ibi_count == 0) {
-      ibi[0] = pulseSensor.getInterBeatIntervalMs(0);
-      ibi_count++;
-      ibi_index = 0;
-    } else if (ibi_count == 1) {
-      ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
-      ibi_count++;
-      ibi_index = 1;
-    } else if (ibi_count >= 2) {
-      ibi[0] = ibi[1];
-      ibi[1] = pulseSensor.getInterBeatIntervalMs(0);
-    } else {
-      error_loop();
-    }
-    msg.ibi = ibi[ibi_index];
-
-    msg.sdnn = sdnn;
-    //rmssd = calc_rmssd(ibi);
-    msg.rmssd = rmssd;
-
+    //Serial.println(pulseSensor.getLatestSample());
     if (pulseSensor.sawStartOfBeat()) {
-      pnn10 = calc_pnn10(float(ibi[ibi_index]));
-      pnn20 = calc_pnn20(float(ibi[ibi_index]));
-      pnn30 = calc_pnn30(float(ibi[ibi_index]));
-      pnn40 = calc_pnn40(float(ibi[ibi_index]));
-      pnn50 = calc_pnn50(float(ibi[ibi_index]));
-      msg.pnn10 = pnn10;
-      msg.pnn20 = pnn20;
-      msg.pnn30 = pnn30;
-      msg.pnn40 = pnn40;
-      msg.pnn50 = pnn50;
+      bpm = pulseSensor.getBeatsPerMinute(0);
+      msg.bpm = bpm;
 
-      // publish IBI, RMSSD, BPM, PNN10-50
+      ibi = pulseSensor.getInterBeatIntervalMs(0);
+      msg.ibi = ibi;
+      Serial.println(msg.ibi);
+
+      // Update ibi_list
+      if (ibi_count >= IBI_SIZE) {
+        for (int i = 0; i < IBI_SIZE - 1; i++) {
+          ibi_list[i] = ibi_list[i+1];
+        }
+        ibi_list[IBI_SIZE - 1] = ibi;
+      } else if (ibi_count >= 0) {
+        ibi_list[ibi_count] = ibi;
+        ibi_count++;
+      } else {
+        error_loop();
+      }
+      for (int i = 0; i < IBI_SIZE; i++) {
+          Serial.println(ibi_list[i]);
+      }
+      Serial.println("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+      // Calc SDNN, CVNN, RMSSD, BPM, PNN10-50
+      calcHRV();
+
+      // Timestamp
+      rosidl_runtime_c__String__assign(&msg.timestamp, tStamp().c_str());
+      
+      // publish TIMESTAMP, IBI, SDNN, CVNN, RMSSD, BPM, PNN10-50
       RCSOFTCHECK(rcl_publish(&publisher, &msg, NULL));
     }
+      
   }
+  
 }
 
-float calc_rmssd(int ibi[]) {
-  // mijissou
-    float sumOfSquares = 0.0;
-    // static float diffArray[];
-    for (int i = 1; i < 2; i++) {
-      int diff = ibi[i] - ibi[i - 1];
-      sumOfSquares += diff * diff;
-    }
+void calcHRV() {
+	float sum = 0;
+	float mean = 0;
 
-    float meanOfSquares = sumOfSquares / (2 - 1);
-    float rmssd = sqrt(meanOfSquares);
+	for (int i = 0; i < IBI_SIZE; i++) {
+		sum += ibi_list[i];
+	}
+	mean = sum / IBI_SIZE;
 
-    return rmssd;
+	calcSDNN(mean);
 }
 
-float calc_pnn10(float ibi) {
-  int X_PNN = 10;
-  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
-  static int xx_count = 0;
-  xx_count++;
+void calcSDNN(float mean) {
+	float sum = 0;
+	float sdnn = 0;
 
-  if (xx_count >= MAX_LEN_DATA + 2) {
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      ibi_arr[i] = ibi_arr[i + 1];
-    }
-    ibi_arr[MAX_LEN_DATA - 1] = ibi;
+	for (int i = 0; i < IBI_SIZE; i++) {
+		sum += ((ibi_list[i] - mean) * (ibi_list[i] - mean));
+	}
 
-    int count = 0;
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
-        count++;
-      }
-    }
-    // Calc and update pnnx
-    float pnn10 = (float)count / MAX_LEN_DATA;
-    return pnn10;
-  }
-  // No enough data for pnnx
-  else if (xx_count < MAX_LEN_DATA + 2) {
-    ibi_arr[xx_count - 1] = ibi;
-    return 0.0;
-  }
+	sdnn = sqrt(sum / IBI_SIZE);
+  msg.sdnn = sdnn;
+
+	calcCVNN(mean, sdnn);
+	calcRMSSD(sdnn);
+	calcPNN();
 }
 
-float calc_pnn20(float ibi) {
-  int X_PNN = 20;
-  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
-  static int xx_count = 0;
-  xx_count++;
-
-  if (xx_count >= MAX_LEN_DATA + 2) {
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      ibi_arr[i] = ibi_arr[i + 1];
-    }
-    ibi_arr[MAX_LEN_DATA - 1] = ibi;
-
-    int count = 0;
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
-        count++;
-      }
-    }
-    // Calc and update pnnx
-    float pnn20 = (float)count / MAX_LEN_DATA;
-    return pnn20;
-  }
-  // No enough data for pnnx
-  else if (xx_count < MAX_LEN_DATA + 2) {
-    ibi_arr[xx_count - 1] = ibi;
-    return 0.0;
-  }
+void calcCVNN(float mean, float sdnn) {
+	float cvnn = sdnn / mean;
+	msg.cvnn = cvnn;
 }
 
-float calc_pnn30(float ibi) {
-  int X_PNN = 30;
-  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
-  static int xx_count = 0;
-  xx_count++;
+void calcRMSSD(float sdnn) {
+	float sum = 0;
+	float rmssd = 0;
 
-  if (xx_count >= MAX_LEN_DATA + 2) {
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      ibi_arr[i] = ibi_arr[i + 1];
-    }
-    ibi_arr[MAX_LEN_DATA - 1] = ibi;
+	for (int i = 1; i < IBI_SIZE; i++) {
+		sum += ((ibi_list[i] - ibi_list[i - 1]) * (ibi_list[i] - ibi_list[i - 1]));
+	}
 
-    int count = 0;
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
-        count++;
-      }
-    }
-    // Calc and update pnnx
-    float pnn30 = (float)count / MAX_LEN_DATA;
-    return pnn30;
-  }
-  // No enough data for pnnx
-  else if (xx_count < MAX_LEN_DATA + 2) {
-    ibi_arr[xx_count - 1] = ibi;
-    return 0.0;
-  }
+	rmssd = sqrt(sum / IBI_SIZE);
+  msg.rmssd = rmssd;
 }
 
-float calc_pnn40(float ibi) {
-  int X_PNN = 40;
-  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
-  static int xx_count = 0;
-  xx_count++;
+void calcPNN() {
+	float nn10 = 0, nn20 = 0, nn30 = 0, nn40 = 0, nn50 = 0, nnX = 0;
+	float pnn10 = 0, pnn20 = 0, pnn30 = 0, pnn40 = 0, pnn50 = 0;
 
-  if (xx_count >= MAX_LEN_DATA + 2) {
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      ibi_arr[i] = ibi_arr[i + 1];
-    }
-    ibi_arr[MAX_LEN_DATA - 1] = ibi;
+	for (int i = 1; i < IBI_SIZE; i++) {
+		nnX = abs(ibi_list[i] - ibi_list[i - 1]);
 
-    int count = 0;
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
-        count++;
-      }
-    }
-    // Calc and update pnnx
-    float pnn40 = (float)count / MAX_LEN_DATA;
-    return pnn40;
-  }
-  // No enough data for pnnx
-  else if (xx_count < MAX_LEN_DATA + 2) {
-    ibi_arr[xx_count - 1] = ibi;
-    return 0.0;
-  }
+		if (nnX > 50) {
+			nn50++;
+			nn40++;
+			nn30++;
+			nn20++;
+			nn10++;
+		}
+		else if (nnX > 40) {
+			nn40++;
+			nn30++;
+			nn20++;
+			nn10++;
+		}
+		else if (nnX > 30) {
+			nn30++;
+			nn20++;
+			nn10++;
+		}
+		else if (nnX > 20) {
+			nn20++;
+			nn10++;
+		}
+		else if (nnX > 10) {
+			nn10++;
+		}
+	}
+
+	pnn50 = nn50 / (IBI_SIZE - 1);
+	pnn40 = nn40 / (IBI_SIZE - 1);
+	pnn30 = nn30 / (IBI_SIZE - 1);
+	pnn20 = nn20 / (IBI_SIZE - 1);
+	pnn10 = nn10 / (IBI_SIZE - 1);
+
+  msg.pnn50 = pnn50;
+  msg.pnn40 = pnn40;
+  msg.pnn30 = pnn30;
+  msg.pnn20 = pnn20;
+  msg.pnn10 = pnn10;
+
 }
 
-float calc_pnn50(float ibi) {
-  int X_PNN = 50;
-  static float ibi_arr[MAX_LEN_DATA + 2] = {0};
-  static int xx_count = 0;
-  xx_count++;
-
-  if (xx_count >= MAX_LEN_DATA + 2) {
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      ibi_arr[i] = ibi_arr[i + 1];
-    }
-    ibi_arr[MAX_LEN_DATA - 1] = ibi;
-
-    int count = 0;
-    for (int i = 0; i < MAX_LEN_DATA; i++) {
-      if (fabs(ibi_arr[i] - ibi_arr[i + 1]) > X_PNN) {
-        count++;
-      }
-    }
-    // Calc and update pnnx
-    float pnn50 = (float)count / MAX_LEN_DATA;
-    return pnn50;
-  }
-  // No enough data for pnnx
-  else if (xx_count < MAX_LEN_DATA + 2) {
-    ibi_arr[xx_count - 1] = ibi;
-    return 0.0;
-  }
+String tStamp() {
+  int now = millis();
+  int milli = milsec + now - start;
+  int sec = second + milli / 1000;
+  milli %= 1000;
+  int min = minute + sec / 60;
+  sec %= 60;
+  int h = hour + min / 60;
+  min %= 60;
+  return String(h) + ":" + String(min) + ":" + String(sec) + ":" + String(milli);
 }
