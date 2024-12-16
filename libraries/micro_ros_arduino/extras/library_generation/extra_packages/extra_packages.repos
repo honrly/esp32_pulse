@@ -1,0 +1,9 @@
+repositories:
+  control_msgs:
+    type: git
+    url: https://github.com/ros-controls/control_msgs
+    version: galactic-devel
+    
+  my_custom_message:
+    type: local
+    path: extra_packages/my_custom_message

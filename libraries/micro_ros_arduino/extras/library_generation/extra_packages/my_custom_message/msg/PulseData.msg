@@ -1,0 +1,11 @@
+string timestamp
+int32 bpm
+int32 ibi
+float32 sdnn
+float32 cvnn
+float32 rmssd
+float32 pnn10
+float32 pnn20
+float32 pnn30
+float32 pnn40
+float32 pnn50

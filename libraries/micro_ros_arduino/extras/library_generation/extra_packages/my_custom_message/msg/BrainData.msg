@@ -1,0 +1,10 @@
+string timestamp
+int32 poorsignal
+int32 delta
+int32 theta
+int32 alpha_l
+int32 alpha_h
+int32 beta_l
+int32 beta_h
+int32 gamma_l
+int32 gamma_m
